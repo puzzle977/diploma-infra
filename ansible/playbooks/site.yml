@@ -1,0 +1,150 @@
+- name: Install base + Docker on all nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Update apt
+      apt:
+        update_cache: yes
+
+    - name: Install base packages + docker
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - docker.io
+          - python3-docker
+        state: present
+
+    - name: Enable docker
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Install docker-compose v2 (binary)
+      get_url:
+        url: https://github.com/docker/compose/releases/download/v2.25.0/docker-compose-linux-x86_64
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+# --------------------------------------------------
+
+- name: Nginx containers on web
+  hosts: web
+  become: true
+  tasks:
+    - name: Run nginx container
+      docker_container:
+        name: nginx
+        image: nginx:stable
+        state: started
+        restart_policy: always
+        ports:
+          - "80:80"
+        volumes:
+          - /opt/nginx/html:/usr/share/nginx/html:ro
+
+    - name: Create index.html
+      copy:
+        dest: /opt/nginx/html/index.html
+        content: |
+          <html>
+          <head><title>Diploma</title></head>
+          <body>
+            <h1>Diploma OK</h1>
+            <p>Host: {{ inventory_hostname }}</p>
+          </body>
+          </html>
+
+# --------------------------------------------------
+
+- name: Zabbix server (Docker)
+  hosts: zabbix
+  become: true
+  tasks:
+    - name: Create zabbix dirs
+      file:
+        path: /opt/zabbix
+        state: directory
+
+    - name: Run Zabbix server
+      docker_container:
+        name: zabbix-server
+        image: zabbix/zabbix-server-mysql:alpine-latest
+        state: started
+        restart_policy: always
+        env:
+          DB_SERVER_HOST: mysql
+          MYSQL_USER: zabbix
+          MYSQL_PASSWORD: zabbix
+          MYSQL_DATABASE: zabbix
+
+    - name: Run Zabbix frontend
+      docker_container:
+        name: zabbix-web
+        image: zabbix/zabbix-web-nginx-mysql:alpine-latest
+        state: started
+        restart_policy: always
+        ports:
+          - "80:8080"
+        env:
+          DB_SERVER_HOST: mysql
+          MYSQL_USER: zabbix
+          MYSQL_PASSWORD: zabbix
+          MYSQL_DATABASE: zabbix
+
+# --------------------------------------------------
+
+- name: Elasticsearch (Docker)
+  hosts: elastic
+  become: true
+  tasks:
+    - name: Run Elasticsearch
+      docker_container:
+        name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+        state: started
+        restart_policy: always
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+        ports:
+          - "9200:9200"
+
+# --------------------------------------------------
+
+- name: Kibana (Docker)
+  hosts: kibana
+  become: true
+  tasks:
+    - name: Run Kibana
+      docker_container:
+        name: kibana
+        image: docker.elastic.co/kibana/kibana:8.12.0
+        state: started
+        restart_policy: always
+        ports:
+          - "5601:5601"
+        env:
+          ELASTICSEARCH_HOSTS: "http://elastic.ru-central1.internal:9200"
+
+# --------------------------------------------------
+
+- name: Filebeat on web (Docker)
+  hosts: web
+  become: true
+  tasks:
+    - name: Run Filebeat
+      docker_container:
+        name: filebeat
+        image: docker.elastic.co/beats/filebeat:8.12.0
+        state: started
+        restart_policy: always
+        user: root
+        volumes:
+          - /var/log/nginx:/var/log/nginx:ro
+        command: >
+          filebeat -e
+          -E output.elasticsearch.hosts=["http://elastic.ru-central1.internal:9200"]

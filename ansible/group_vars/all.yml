@@ -1,0 +1,5 @@
+ansible_user: ubuntu
+#bastion_public_ip: 158.160.33.121
+
+#ansible_ssh_common_args: >-
+#  -o ProxyCommand="ssh -W %h:%p -q ubuntu@158.160.33.121"
