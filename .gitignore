@@ -21,3 +21,4 @@
 # OS/IDE
 .DS_Store
 .vscode/
+ansible/group_vars/vault.yml
