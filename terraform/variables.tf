@@ -39,8 +39,15 @@ variable "ssh_pubkey_path" {
   type = string
 }
 
-# Чтобы сайт был одинаковый на web1/web2
+variable "image_id" {
+  type = string
+}
+
 variable "site_title" {
   type    = string
   default = "Diploma Site"
+}
+
+variable "alb_healthcheck_cidrs" {
+  type = list(string)
 }

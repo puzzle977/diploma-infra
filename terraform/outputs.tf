@@ -14,9 +14,10 @@ output "alb_public_ip" {
   value = yandex_alb_load_balancer.web_alb.listener[0].endpoint[0].address[0].external_ipv4_address[0].address
 }
 
-# FQDN для ansible inventory (важно для диплома)
-output "web1_fqdn" { value = "web1.ru-central1.internal" }
-output "web2_fqdn" { value = "web2.ru-central1.internal" }
+output "web_fqdns" {
+  value = [for k in keys(yandex_compute_instance.web) : "${k}.ru-central1.internal"]
+}
+
 output "elastic_fqdn" { value = "elastic.ru-central1.internal" }
 output "zabbix_fqdn" { value = "zabbix.ru-central1.internal" }
 output "kibana_fqdn" { value = "kibana.ru-central1.internal" }

@@ -1,0 +1,364 @@
+- name: Base
+  hosts: all
+  become: true
+  tasks:
+    - apt:
+        update_cache: true
+
+    - apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+- name: Web
+  hosts: web
+  become: true
+  vars:
+    site_root: /var/www/site
+  tasks:
+    - apt:
+        name: nginx
+        state: present
+
+    - service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - file:
+        path: "{{ site_root }}"
+        state: directory
+        mode: "0755"
+
+    - copy:
+        dest: "{{ site_root }}/index.html"
+        mode: "0644"
+        content: |
+          <html>
+          <head><title>Diploma</title></head>
+          <body>
+            <h1>Diploma OK</h1>
+            <p>Host: {{ inventory_hostname }}</p>
+          </body>
+          </html>
+
+    - template:
+        src: templates/nginx_site.conf.j2
+        dest: /etc/nginx/sites-available/default
+        mode: "0644"
+
+    - service:
+        name: nginx
+        state: restarted
+        enabled: true
+
+- name: Elasticsearch
+  hosts: elastic
+  become: true
+  vars:
+    elastic_image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+  tasks:
+    - apt:
+        name:
+          - docker.io
+          - python3-docker
+        state: present
+
+    - service:
+        name: docker
+        state: started
+        enabled: true
+
+    - docker_container:
+        name: elasticsearch
+        image: "{{ elastic_image }}"
+        state: started
+        restart_policy: always
+        recreate: true
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+        ports:
+          - "9200:9200"
+
+- name: Kibana
+  hosts: kibana
+  become: true
+  vars:
+    kibana_image: docker.elastic.co/kibana/kibana:8.12.0
+    elastic_host: elastic.ru-central1.internal
+    elastic_port: 9200
+  tasks:
+    - apt:
+        name:
+          - docker.io
+          - python3-docker
+        state: present
+
+    - service:
+        name: docker
+        state: started
+        enabled: true
+
+    - docker_container:
+        name: kibana
+        image: "{{ kibana_image }}"
+        state: started
+        restart_policy: always
+        recreate: true
+        ports:
+          - "5601:5601"
+        env:
+          ELASTICSEARCH_HOSTS: "http://{{ elastic_host }}:{{ elastic_port }}"
+
+- name: Filebeat
+  hosts: web
+  become: true
+  vars:
+    elastic_host: elastic.ru-central1.internal
+    elastic_port: 9200
+    kibana_host: kibana.ru-central1.internal
+    kibana_port: 5601
+    filebeat_image: docker.elastic.co/beats/filebeat:8.12.0
+  tasks:
+    - apt:
+        name:
+          - docker.io
+          - python3-docker
+        state: present
+
+    - service:
+        name: docker
+        state: started
+        enabled: true
+
+    - file:
+        path: /var/log/nginx
+        state: directory
+        mode: "0755"
+
+    - template:
+        src: templates/filebeat.yml.j2
+        dest: /etc/filebeat.yml
+        mode: "0644"
+
+    - docker_container:
+        name: filebeat
+        image: "{{ filebeat_image }}"
+        state: started
+        restart_policy: always
+        recreate: true
+        user: root
+        command: ["-e", "-strict.perms=false"]
+        volumes:
+          - "/etc/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro"
+          - "/var/log/nginx:/var/log/nginx:ro"
+
+- name: Zabbix server
+  hosts: zabbix
+  become: true
+  vars_files:
+    - group_vars/vault.yml
+  vars:
+    zbx_version: "6.0.25"
+    zbx_net: "zbxnet"
+    zbx_db_container: "zbx-mysql"
+    zbx_srv_container: "zabbix-server"
+    zbx_web_container: "zabbix-web"
+    zbx_db_volume: "zbx-mysql-data"
+    zbx_reset: true
+  tasks:
+    - apt:
+        name:
+          - docker.io
+          - python3-docker
+        state: present
+
+    - service:
+        name: docker
+        state: started
+        enabled: true
+
+    - docker_container:
+        name: "{{ zbx_web_container }}"
+        state: absent
+        force_kill: true
+      when: zbx_reset | bool
+
+    - docker_container:
+        name: "{{ zbx_srv_container }}"
+        state: absent
+        force_kill: true
+      when: zbx_reset | bool
+
+    - docker_container:
+        name: "{{ zbx_db_container }}"
+        state: absent
+        force_kill: true
+      when: zbx_reset | bool
+
+    - docker_network:
+        name: "{{ zbx_net }}"
+        state: absent
+      when: zbx_reset | bool
+
+    - docker_volume:
+        name: "{{ zbx_db_volume }}"
+        state: absent
+      when: zbx_reset | bool
+
+    - docker_network:
+        name: "{{ zbx_net }}"
+        state: present
+
+    - docker_volume:
+        name: "{{ zbx_db_volume }}"
+        state: present
+
+    - docker_container:
+        name: "{{ zbx_db_container }}"
+        image: mysql:8.0.36
+        state: started
+        restart_policy: always
+        recreate: true
+        networks:
+          - name: "{{ zbx_net }}"
+        env:
+          MYSQL_ROOT_PASSWORD: "{{ zbx_mysql_root_password }}"
+          MYSQL_DATABASE: zabbix
+          MYSQL_USER: zabbix
+          MYSQL_PASSWORD: "{{ zbx_mysql_password }}"
+        command:
+          - "--character-set-server=utf8mb4"
+          - "--collation-server=utf8mb4_bin"
+          - "--log-bin-trust-function-creators=1"
+          - "--skip-log-bin"
+        volumes:
+          - "{{ zbx_db_volume }}:/var/lib/mysql"
+
+    - command: docker exec {{ zbx_db_container }} mysqladmin ping -uroot -p{{ zbx_mysql_root_password }}
+      register: mysql_ping
+      retries: 180
+      delay: 2
+      until: mysql_ping.rc == 0
+
+    - docker_container:
+        name: "{{ zbx_srv_container }}"
+        image: "zabbix/zabbix-server-mysql:alpine-{{ zbx_version }}"
+        state: started
+        restart_policy: always
+        recreate: true
+        networks:
+          - name: "{{ zbx_net }}"
+        env:
+          DB_SERVER_HOST: "{{ zbx_db_container }}"
+          MYSQL_DATABASE: zabbix
+          MYSQL_USER: zabbix
+          MYSQL_PASSWORD: "{{ zbx_mysql_password }}"
+        ports:
+          - "10051:10051"
+
+    - command: docker exec {{ zbx_db_container }} mysql -uzabbix -p{{ zbx_mysql_password }} -N -e "SELECT 1"
+      register: zbx_db_ready
+      retries: 60
+      delay: 2
+      until: zbx_db_ready.rc == 0
+
+    - command: docker exec {{ zbx_db_container }} mysql -uzabbix -p{{ zbx_mysql_password }} -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='zabbix' AND table_name='users';"
+      register: zbx_users_table_exists
+      changed_when: false
+
+    - command: >
+        docker exec {{ zbx_srv_container }} sh -lc
+        "ls -1 /usr/share/doc/zabbix-server-mysql/*.sql.gz /usr/share/zabbix-sql-scripts/mysql/*.sql.gz 2>/dev/null | head -n1"
+      register: zbx_sql_gz_path
+      changed_when: false
+      when: (zbx_users_table_exists.stdout | int) == 0
+
+    - fail:
+        msg: "Zabbix SQL archive (*.sql.gz) not found inside zabbix-server container"
+      when:
+        - (zbx_users_table_exists.stdout | int) == 0
+        - zbx_sql_gz_path.stdout | trim == ""
+
+    - command: >
+        docker exec {{ zbx_srv_container }} sh -lc
+        "zcat {{ zbx_sql_gz_path.stdout | trim }} |
+         mysql -h{{ zbx_db_container }} -uzabbix -p{{ zbx_mysql_password }} zabbix"
+      register: zbx_import
+      changed_when: true
+      when: (zbx_users_table_exists.stdout | int) == 0
+
+    - command: docker exec {{ zbx_db_container }} mysql -uzabbix -p{{ zbx_mysql_password }} -N -e "SELECT COUNT(*) FROM zabbix.users;"
+      register: zbx_users_count
+      retries: 120
+      delay: 2
+      until: (zbx_users_count.stdout | int) > 0
+
+    - docker_container:
+        name: "{{ zbx_web_container }}"
+        image: "zabbix/zabbix-web-nginx-mysql:alpine-{{ zbx_version }}"
+        state: started
+        restart_policy: always
+        recreate: true
+        networks:
+          - name: "{{ zbx_net }}"
+        env:
+          DB_SERVER_HOST: "{{ zbx_db_container }}"
+          MYSQL_DATABASE: zabbix
+          MYSQL_USER: zabbix
+          MYSQL_PASSWORD: "{{ zbx_mysql_password }}"
+          ZBX_SERVER_HOST: "{{ zbx_srv_container }}"
+        ports:
+          - "8080:8080"
+
+- name: Zabbix agents
+  hosts: web:elastic:kibana:bastion
+  become: true
+  vars:
+    zabbix_server_host: zabbix.ru-central1.internal
+    zabbix_version: "6.0"
+  tasks:
+    - apt:
+        name:
+          - wget
+          - gnupg
+        state: present
+        update_cache: true
+
+    - shell: |
+        set -e
+        wget -qO /tmp/zabbix-release.deb https://repo.zabbix.com/zabbix/{{ zabbix_version }}/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest+ubuntu22.04_all.deb
+        dpkg -i /tmp/zabbix-release.deb
+      args:
+        creates: /etc/apt/sources.list.d/zabbix.list
+
+    - apt:
+        update_cache: true
+
+    - apt:
+        name: zabbix-agent2
+        state: present
+
+    - lineinfile:
+        path: /etc/zabbix/zabbix_agent2.conf
+        regexp: '^Server='
+        line: "Server={{ zabbix_server_host }}"
+
+    - lineinfile:
+        path: /etc/zabbix/zabbix_agent2.conf
+        regexp: '^ServerActive='
+        line: "ServerActive={{ zabbix_server_host }}"
+
+    - lineinfile:
+        path: /etc/zabbix/zabbix_agent2.conf
+        regexp: '^Hostname='
+        line: "Hostname={{ inventory_hostname }}"
+
+    - service:
+        name: zabbix-agent2
+        state: restarted
+        enabled: true

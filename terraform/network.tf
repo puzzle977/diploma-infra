@@ -2,9 +2,6 @@ resource "yandex_vpc_network" "vpc" {
   name = "diploma-vpc"
 }
 
-# --------------------
-# Публичная подсеть
-# --------------------
 resource "yandex_vpc_subnet" "public" {
   name           = "public-subnet"
   zone           = "ru-central1-a"
@@ -12,18 +9,11 @@ resource "yandex_vpc_subnet" "public" {
   v4_cidr_blocks = [var.public_cidr]
 }
 
-# --------------------
-# NAT Gateway
-# --------------------
 resource "yandex_vpc_gateway" "nat" {
   name = "nat-gw"
-
   shared_egress_gateway {}
 }
 
-# --------------------
-# Route table для приватных подсетей
-# --------------------
 resource "yandex_vpc_route_table" "private_rt" {
   name       = "private-rt"
   network_id = yandex_vpc_network.vpc.id
@@ -34,26 +24,18 @@ resource "yandex_vpc_route_table" "private_rt" {
   }
 }
 
-# --------------------
-# Приватная подсеть A
-# --------------------
-resource "yandex_vpc_subnet" "private_a" {
-  name           = "private-a"
-  zone           = "ru-central1-a"
-  network_id     = yandex_vpc_network.vpc.id
-  v4_cidr_blocks = [var.private_a_cidr]
-
-  route_table_id = yandex_vpc_route_table.private_rt.id
+locals {
+  private_subnets = {
+    private-a = { zone = "ru-central1-a", cidr = var.private_a_cidr }
+    private-b = { zone = "ru-central1-b", cidr = var.private_b_cidr }
+  }
 }
 
-# --------------------
-# Приватная подсеть B
-# --------------------
-resource "yandex_vpc_subnet" "private_b" {
-  name           = "private-b"
-  zone           = "ru-central1-b"
+resource "yandex_vpc_subnet" "private" {
+  for_each       = local.private_subnets
+  name           = each.key
+  zone           = each.value.zone
   network_id     = yandex_vpc_network.vpc.id
-  v4_cidr_blocks = [var.private_b_cidr]
-
+  v4_cidr_blocks = [each.value.cidr]
   route_table_id = yandex_vpc_route_table.private_rt.id
 }

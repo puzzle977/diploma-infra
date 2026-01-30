@@ -1,23 +1,15 @@
-# -------------------------
-# Target Group (web1 + web2)
-# -------------------------
 resource "yandex_alb_target_group" "web_tg" {
   name = "web-tg"
 
-  target {
-    subnet_id  = yandex_compute_instance.web1.network_interface[0].subnet_id
-    ip_address = yandex_compute_instance.web1.network_interface[0].ip_address
-  }
-
-  target {
-    subnet_id  = yandex_compute_instance.web2.network_interface[0].subnet_id
-    ip_address = yandex_compute_instance.web2.network_interface[0].ip_address
+  dynamic "target" {
+    for_each = yandex_compute_instance.web
+    content {
+      subnet_id  = target.value.network_interface[0].subnet_id
+      ip_address = target.value.network_interface[0].ip_address
+    }
   }
 }
 
-# -------------------------
-# Backend Group
-# -------------------------
 resource "yandex_alb_backend_group" "web_bg" {
   name = "web-bg"
 
@@ -39,9 +31,6 @@ resource "yandex_alb_backend_group" "web_bg" {
   }
 }
 
-# -------------------------
-# HTTP Router + Virtual Host
-# -------------------------
 resource "yandex_alb_http_router" "web_router" {
   name = "web-router"
 }
@@ -61,9 +50,6 @@ resource "yandex_alb_virtual_host" "web_vhost" {
   }
 }
 
-# -------------------------
-# ALB Load Balancer
-# -------------------------
 resource "yandex_alb_load_balancer" "web_alb" {
   name       = "web-alb"
   network_id = yandex_vpc_network.vpc.id
